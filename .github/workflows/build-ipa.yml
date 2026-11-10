@@ -1,0 +1,75 @@
+name: Build unsigned NiuPrompter IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-ipa.yml'
+      - 'scripts/build-unsigned-ipa.sh'
+      - 'scripts/verify-unsigned-ipa.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unsigned-ipa-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Standard public-repository runner; Xcode 27.2 matches upstream's baseline.
+    runs-on: xcode-27
+    timeout-minutes: 40
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Verify build tools
+        run: |
+          mkdir -p build-logs
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version | tee build-logs/toolchain.txt
+          xcrun swift --version | tee -a build-logs/toolchain.txt
+          xcrun --sdk iphoneos --show-sdk-version | tee -a build-logs/toolchain.txt
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          brew list ripgrep >/dev/null 2>&1 || brew install ripgrep
+          xcodegen --version | tee -a build-logs/toolchain.txt
+
+      - name: Run existing project checks
+        run: |
+          set -o pipefail
+          bash scripts/check-boundaries.sh | tee build-logs/boundaries.log
+          swift run --disable-sandbox TeleprompterChecks 2>&1 | tee build-logs/checks.log
+
+      - name: Build, package and verify unsigned device app
+        run: |
+          set -o pipefail
+          bash scripts/build-unsigned-ipa.sh 2>&1 | tee build-logs/ios-build.log
+
+      - name: Upload IPA and verification report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: NiuPrompter-unsigned-${{ github.run_number }}
+          path: |
+            dist/NiuPrompter-unsigned.ipa
+            dist/NiuPrompter-unsigned.ipa.sha256
+            dist/verification.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: NiuPrompter-build-logs-${{ github.run_number }}
+          path: build-logs/
+          if-no-files-found: warn
+          retention-days: 14
